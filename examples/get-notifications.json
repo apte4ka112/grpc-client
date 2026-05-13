@@ -1,0 +1,52 @@
+{
+  "_comment": "Sample MCP tool invocations for the 3 tools exposed by grpc-client.",
+
+  "call": {
+    "tool": "grpc_call",
+    "args": {
+      "profile": "dev",
+      "service": "api.customer.v1.CustomerProfileAPI",
+      "method": "GetNotifications",
+      "data": {}
+    }
+  },
+
+  "call_dry_run": {
+    "tool": "grpc_call",
+    "args": {
+      "profile": "dev",
+      "service": "api.customer.v1.CustomerProfileAPI",
+      "method": "GetNotifications",
+      "data": {},
+      "dryRun": true
+    }
+  },
+
+  "call_with_overrides": {
+    "tool": "grpc_call",
+    "args": {
+      "profile": "prod",
+      "service": "ProductAPI",
+      "method": "GetProductShortForecast",
+      "data": { "productIds": [267881, 18274] },
+      "headers": { "x-trace-id": "claude-debug-001" },
+      "cookies": { "session_override": "test-value" },
+      "timeoutMs": 10000
+    }
+  },
+
+  "list_services": {
+    "tool": "grpc_list_services",
+    "args": { "profile": "dev" }
+  },
+
+  "describe_service": {
+    "tool": "grpc_describe_method",
+    "args": { "profile": "dev", "service": "ProductAPI" }
+  },
+
+  "describe_method": {
+    "tool": "grpc_describe_method",
+    "args": { "profile": "dev", "service": "ProductAPI", "method": "GetProductShortForecast" }
+  }
+}
