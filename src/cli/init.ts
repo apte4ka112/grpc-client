@@ -2,7 +2,6 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { CONFIG_FILE, DIR_NAME, PACKAGE_REF } from '../config/paths.js'
 
-const SKILLS_TEMPLATE_DIR = new URL('../../templates/skills/', import.meta.url).pathname
 const PREFERRED_PROTO_RE = /api[-_]?client\/proto$/
 
 export interface InitOptions {
@@ -14,7 +13,6 @@ export interface InitResult {
   configPath: string
   mcpPath: string
   gitignore: { path: string; appended: boolean } | null
-  skills: string[]
   protoDir: string | null
   createdConfig: boolean
   mcpChanged: boolean
@@ -80,29 +78,7 @@ export function runInit(opts: InitOptions): InitResult {
     }
   }
 
-  const skills = deploySkills(cwd)
-
-  return { configPath, mcpPath, gitignore, skills, protoDir, createdConfig, mcpChanged }
-}
-
-function deploySkills(cwd: string): string[] {
-  const target = path.join(cwd, '.claude', 'skills')
-  if (!fs.existsSync(SKILLS_TEMPLATE_DIR)) return []
-  fs.mkdirSync(target, { recursive: true })
-  const written: string[] = []
-  for (const name of fs.readdirSync(SKILLS_TEMPLATE_DIR)) {
-    const srcDir = path.join(SKILLS_TEMPLATE_DIR, name)
-    if (!fs.statSync(srcDir).isDirectory()) continue
-    const dstDir = path.join(target, name)
-    fs.mkdirSync(dstDir, { recursive: true })
-    for (const file of fs.readdirSync(srcDir)) {
-      const dst = path.join(dstDir, file)
-      if (fs.existsSync(dst)) continue
-      fs.copyFileSync(path.join(srcDir, file), dst)
-      written.push(path.relative(cwd, dst))
-    }
-  }
-  return written
+  return { configPath, mcpPath, gitignore, protoDir, createdConfig, mcpChanged }
 }
 
 function findProtoDir(cwd: string): string | null {
@@ -158,12 +134,9 @@ export function formatReport(r: InitResult): string {
   if (r.gitignore) {
     lines.push(`  .gitignore: ${r.gitignore.path}${r.gitignore.appended ? ' (added .grpc-client/)' : ' (already had .grpc-client/)'}`)
   }
-  if (r.skills.length) {
-    lines.push(`  skills:    deployed ${r.skills.length} → ${r.skills.join(', ')}`)
-  }
   lines.push(`  protoDir:  ${r.protoDir ?? 'NOT DETECTED — edit config.json before first call'}`)
   lines.push('')
   lines.push('Next: open the config and fill in host/headers/cookies, then restart Claude Code.')
-  lines.push('To refresh session: paste a curl from DevTools and Claude will call `grpc_import_curl`.')
+  lines.push('After restart speak naturally: paste a curl in chat to refresh session, or say "дёрни GetCart" / "посмотри данные на dev по GetX" to call an RPC.')
   return lines.join('\n')
 }

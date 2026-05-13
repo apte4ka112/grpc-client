@@ -40,7 +40,34 @@ export function buildTools(cfg: LoadedConfig): ToolDef[] {
   return [
     {
       name: 'grpc_call',
-      description: 'Send a unary gRPC request. Per-call overrides (headers, cookies, timeout, host) take precedence over the profile. Returns JSON response with status, trailers and timing. dryRun: build the request without sending. Every call is appended to .grpc-client/calls.jsonl.',
+      description: [
+        'Send a unary gRPC request. Use this whenever the user wants to invoke an RPC — phrases like "дёрни X", "сделай grpc запрос", "позови X", "вызови rpc", "посмотри данные на dev по X", "call X".',
+        '',
+        'WORKFLOW — follow every time:',
+        '1. If the user named only a method (no service), call grpc_list_services first to locate it. If multiple services have the same method name, ask the user to pick.',
+        '2. Unless you already inspected this exact method in the current conversation, call grpc_describe_method with the resolved service+method BEFORE calling this tool. You need the request schema to know required fields.',
+        '3. From the schema identify required fields (NOT marked optional, NOT part of a oneof). If the user didn\'t provide values for any of them, ASK in chat — list field names with types compactly, e.g. "Методу нужен productIds: int64[] (repeated, required). Дай список ID через запятую." For repeated fields accept comma-separated input. Never invent values; if the user is vague, suggest dryRun: true.',
+        '4. Call this tool. Default profile is `dev`; pass profile: "prod" ONLY when the user explicitly says "на проде" / "in prod", and ask once to confirm before the first prod call in the session.',
+        '5. Show the result compactly: "OK · 142ms · response: {…top 1–3 keys…}". Don\'t dump huge payloads unless asked. Offer to drill into a field on request.',
+        '',
+        'STRICT HOST RULE — read carefully:',
+        '- The target host comes ONLY from the active profile in .grpc-client/config.json (or the per-call `host` arg if the user explicitly passed one in THIS message).',
+        '- NEVER substitute the host from the curl URL, from an error message, from a previous request, or from inference. The curl URL is a frontend (e.g. winestyle.ru / dev.frontend...) — it is NEVER a valid gRPC host.',
+        '- If a call fails with TLS error / self-signed cert / UNAVAILABLE / DNS issue: report the host and the error to the user, then STOP. Do NOT try a different host. Do NOT "try via curl host". Ask the user what to do.',
+        '- The only way the host changes mid-conversation is if the user types it explicitly ("позови на проде", "host: foo.bar:443"). Otherwise: use the profile, no exceptions.',
+        '',
+        'ERROR ACTIONS (after the strict host rule above):',
+        '- code 0 OK: success.',
+        '- code 3 INVALID_ARGUMENT: re-fetch the schema, point out what\'s wrong, ask the user to correct.',
+        '- code 7 PERMISSION_DENIED / code 16 UNAUTHENTICATED: session is stale. Tell the user "Куки протухли. Вставь свежий curl из DevTools — я обновлю сессию через grpc_import_curl." Do NOT retry automatically.',
+        '- code 12 UNIMPLEMENTED: wrong method on this service. List methods available on the service. Do NOT switch hosts.',
+        '- code 14 UNAVAILABLE / TLS / DNS / certificate errors: report verbatim, name the host that was tried, and STOP. Don\'t guess alternatives. Ask the user.',
+        '- other codes: surface message + trailers.',
+        '',
+        'ANTI-BAN HYGIENE: all headers/cookies from the active profile are sent as-is. Don\'t strip user-agent / origin / referer. No rapid-fire retries on errors — one call per user intent.',
+        '',
+        'PER-CALL OVERRIDES (use only when user asks): host, headers, cookies, timeoutMs, proto. dryRun: true previews without sending. Every call is appended to .grpc-client/calls.jsonl.'
+      ].join('\n'),
       inputSchema: jsonSchema(GrpcCallArgs),
       handler: async input => {
         const a = GrpcCallArgs.parse(input)
@@ -92,7 +119,7 @@ export function buildTools(cfg: LoadedConfig): ToolDef[] {
     },
     {
       name: 'grpc_list_services',
-      description: 'List services available on the active profile (proto file scan).',
+      description: 'List gRPC services parsed from the profile\'s proto tree. Trigger on "покажи сервисы", "что доступно", "list services", or when grpc_call needs to disambiguate a method that exists in multiple services.',
       inputSchema: jsonSchema(ListServicesArgs),
       handler: async input => {
         const a = ListServicesArgs.parse(input)
@@ -108,7 +135,7 @@ export function buildTools(cfg: LoadedConfig): ToolDef[] {
     },
     {
       name: 'grpc_describe_method',
-      description: 'Describe a method (request/response field tree). Omit method to describe the whole service.',
+      description: 'Describe a service or one of its methods. Omit `method` to list methods on a service; pass both to get request/response field shapes. Always call this before grpc_call (unless you inspected the same method earlier in this conversation) — the request.fields map drives the "ask user for missing required fields" step.',
       inputSchema: jsonSchema(DescribeArgs),
       handler: async input => {
         const a = DescribeArgs.parse(input)
@@ -126,7 +153,24 @@ export function buildTools(cfg: LoadedConfig): ToolDef[] {
     },
     {
       name: 'grpc_import_curl',
-      description: 'Parse a curl command (e.g. Chrome DevTools Copy as cURL) and merge its headers and cookies into a profile in .grpc-client/config.json. By default does NOT touch host or protoDir — typical use is refreshing CSRF token and session cookies from a fresh browser request. Pass replace: true to overwrite headers/cookies instead of merging. Pass an explicit `host` string only when you intentionally want to retarget the profile. Requires file-config mode.',
+      description: [
+        'Parse a curl command and merge its headers + cookies into a profile in .grpc-client/config.json. Use this whenever:',
+        '- The user pastes a `curl \'...\' -H \'...\'` block in chat (with or without an explicit instruction — pasted curl is the signal).',
+        '- The user says "обнови сессию", "обнови куки", "новый curl", "refresh session".',
+        '- A previous grpc_call returned UNAUTHENTICATED (16) or PERMISSION_DENIED (7) — ask for a fresh curl from DevTools and then call this.',
+        '',
+        'WORKFLOW:',
+        '1. If no curl is in the conversation, tell the user: "Открой Chrome DevTools → Network → ПКМ по любому grpc-web запросу → Copy → Copy as cURL. Вставь сюда."',
+        '2. Once a curl is in chat, call with `curl` = the full pasted command. Omit `profile` to patch the active one; pass an explicit name only if the user said "в профиль prod".',
+        '3. Do NOT pass `host` — curl from the browser usually hits the frontend (e.g. winestyle.ru) while the actual gRPC endpoint (grpc.winestyle.ru:443) is already configured. Override host only when the user explicitly asks to retarget.',
+        '4. Confirm in 1 line: profile, count of headers/cookies updated, and whether hostChanged is true (warn if so).',
+        '',
+        'After import, the next grpc_call uses the new tokens automatically (config.json hot-reloads by mtime). If a call failed earlier with stale auth, offer to retry it.',
+        '',
+        'Args: curl (required); profile (default = active); replace (default false — true overwrites instead of merging headers/cookies); host (optional explicit override).',
+        '',
+        'Returns FAILED_PRECONDITION if MCP is running in env-JSON mode (config came from GRPC_CLIENT_CONFIG env, not a file). In that case tell the user to drop the env var and re-init via `npx github:apte4ka112/grpc-client init`.'
+      ].join('\n'),
       inputSchema: jsonSchema(ImportCurlArgs),
       handler: async input => {
         const a = ImportCurlArgs.parse(input)
