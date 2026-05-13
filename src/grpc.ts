@@ -9,6 +9,7 @@ import {
   type MethodMeta,
   type ServiceMeta
 } from './proto/resolver.js'
+import { formatCookieHeader } from './utils/cookies.js'
 import { logger } from './utils/logger.js'
 
 export interface Streaming {
@@ -156,15 +157,7 @@ export function closeAllClients(): void {
   clients.clear()
 }
 
-export function buildCookieString(seedCookies: Record<string, string>): string {
-  if (!seedCookies) return ''
-  const parts: string[] = []
-  for (const [k, v] of Object.entries(seedCookies)) {
-    if (!k || v == null || v === '') continue
-    parts.push(`${k}=${v}`)
-  }
-  return parts.join('; ')
-}
+export const buildCookieString = formatCookieHeader
 
 function serviceListing(s: ServiceMeta): ServiceListing {
   return { service: s.fullName, methods: Object.values(s.methods).map(methodSummary) }

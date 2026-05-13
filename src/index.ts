@@ -14,9 +14,6 @@ if (args[0] === 'init') {
     process.stderr.write(`init failed: ${(err as Error).message}\n`)
     process.exit(1)
   }
-} else if (args[0] === 'from-curl') {
-  process.stderr.write('Tip: use the `grpc_import_curl` MCP tool inside Claude — paste the curl into the chat.\n')
-  process.exit(1)
 } else {
   startServer().catch(err => {
     logger.fatal({ err: err.message, stack: err.stack }, 'fatal startup error')

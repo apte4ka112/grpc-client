@@ -1,9 +1,9 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { CONFIG_FILE, DIR_NAME, PACKAGE_REF } from '../config/paths.js'
 
-const DIR_NAME = '.grpc-client'
-const FILE_NAME = 'config.json'
-const PACKAGE_REF = 'github:apte4ka112/grpc-client'
+const SKILLS_TEMPLATE_DIR = new URL('../../templates/skills/', import.meta.url).pathname
+const PREFERRED_PROTO_RE = /api[-_]?client\/proto$/
 
 export interface InitOptions {
   cwd: string
@@ -13,18 +13,18 @@ export interface InitOptions {
 export interface InitResult {
   configPath: string
   mcpPath: string
-  gitignorePath: string | null
+  gitignore: { path: string; appended: boolean } | null
+  skills: string[]
   protoDir: string | null
   createdConfig: boolean
-  updatedMcp: boolean
-  appendedGitignore: boolean
+  mcpChanged: boolean
 }
 
 export function runInit(opts: InitOptions): InitResult {
   const cwd = path.resolve(opts.cwd)
   const packageRef = opts.packageRef ?? PACKAGE_REF
   const dataDir = path.join(cwd, DIR_NAME)
-  const configPath = path.join(dataDir, FILE_NAME)
+  const configPath = path.join(dataDir, CONFIG_FILE)
   const mcpPath = path.join(cwd, '.mcp.json')
 
   const protoDir = findProtoDir(cwd)
@@ -53,75 +53,95 @@ export function runInit(opts: InitOptions): InitResult {
     createdConfig = true
   }
 
+  const desiredMcpEntry = { command: 'npx', args: [packageRef] }
   const mcp: { mcpServers?: Record<string, unknown> } = fs.existsSync(mcpPath)
     ? JSON.parse(fs.readFileSync(mcpPath, 'utf8'))
     : {}
   mcp.mcpServers = mcp.mcpServers ?? {}
-  mcp.mcpServers['grpc-client'] = { command: 'npx', args: [packageRef] }
-  fs.writeFileSync(mcpPath, JSON.stringify(mcp, null, 2) + '\n')
+  const mcpChanged =
+    JSON.stringify(mcp.mcpServers['grpc-client']) !== JSON.stringify(desiredMcpEntry)
+  if (mcpChanged) {
+    mcp.mcpServers['grpc-client'] = desiredMcpEntry
+    fs.writeFileSync(mcpPath, JSON.stringify(mcp, null, 2) + '\n')
+  }
 
   const giPath = path.join(cwd, '.gitignore')
-  let appendedGitignore = false
-  let gitignorePath: string | null = null
+  let gitignore: InitResult['gitignore'] = null
   if (fs.existsSync(giPath)) {
-    gitignorePath = giPath
     const text = fs.readFileSync(giPath, 'utf8')
     const lines = text.split('\n').map(l => l.trim())
-    if (!lines.includes(`${DIR_NAME}/`) && !lines.includes(DIR_NAME)) {
+    const has = lines.includes(`${DIR_NAME}/`) || lines.includes(DIR_NAME)
+    if (!has) {
       const sep = text.length === 0 || text.endsWith('\n') ? '' : '\n'
       fs.appendFileSync(giPath, `${sep}\n# grpc-client MCP local config + call log\n${DIR_NAME}/\n`)
-      appendedGitignore = true
+      gitignore = { path: giPath, appended: true }
+    } else {
+      gitignore = { path: giPath, appended: false }
     }
   }
 
-  return {
-    configPath,
-    mcpPath,
-    gitignorePath,
-    protoDir,
-    createdConfig,
-    updatedMcp: true,
-    appendedGitignore
+  const skills = deploySkills(cwd)
+
+  return { configPath, mcpPath, gitignore, skills, protoDir, createdConfig, mcpChanged }
+}
+
+function deploySkills(cwd: string): string[] {
+  const target = path.join(cwd, '.claude', 'skills')
+  if (!fs.existsSync(SKILLS_TEMPLATE_DIR)) return []
+  fs.mkdirSync(target, { recursive: true })
+  const written: string[] = []
+  for (const name of fs.readdirSync(SKILLS_TEMPLATE_DIR)) {
+    const srcDir = path.join(SKILLS_TEMPLATE_DIR, name)
+    if (!fs.statSync(srcDir).isDirectory()) continue
+    const dstDir = path.join(target, name)
+    fs.mkdirSync(dstDir, { recursive: true })
+    for (const file of fs.readdirSync(srcDir)) {
+      const dst = path.join(dstDir, file)
+      if (fs.existsSync(dst)) continue
+      fs.copyFileSync(path.join(srcDir, file), dst)
+      written.push(path.relative(cwd, dst))
+    }
   }
+  return written
 }
 
 function findProtoDir(cwd: string): string | null {
   const nm = path.join(cwd, 'node_modules')
   if (!fs.existsSync(nm)) return null
-  const candidates: string[] = []
-  scan(nm, candidates, 4)
-  candidates.sort((a, b) => {
-    const ap = /api[-_]?client\/proto$/.test(a) ? 0 : 1
-    const bp = /api[-_]?client\/proto$/.test(b) ? 0 : 1
-    if (ap !== bp) return ap - bp
-    return a.length - b.length
-  })
-  return candidates[0] ?? null
+  const found: { path: string; preferred: boolean }[] = []
+  scan(nm, found, 4)
+  found.sort((a, b) => Number(b.preferred) - Number(a.preferred) || a.path.length - b.path.length)
+  return found[0]?.path ?? null
 }
 
-function scan(dir: string, out: string[], depthLeft: number): void {
-  if (depthLeft <= 0) return
+function scan(dir: string, out: { path: string; preferred: boolean }[], depthLeft: number): boolean {
+  if (depthLeft <= 0) return false
   let entries: fs.Dirent[]
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true })
   } catch {
-    return
+    return false
   }
   for (const e of entries) {
     if (!e.isDirectory()) continue
-    if (e.name.startsWith('.')) continue
+    if (e.name.startsWith('.') || e.name === 'node_modules') continue
     const p = path.join(dir, e.name)
-    if (e.name === 'proto') {
-      try {
-        if (fs.readdirSync(p).some(f => f.endsWith('.proto'))) {
-          out.push(p)
-          continue
-        }
-      } catch {
-        /* ignore */
-      }
+    if (e.name === 'proto' && containsProtoFiles(p)) {
+      const preferred = PREFERRED_PROTO_RE.test(p)
+      out.push({ path: p, preferred })
+      if (preferred) return true
+      continue
     }
-    scan(p, out, depthLeft - 1)
+    if (scan(p, out, depthLeft - 1)) return true
+  }
+  return false
+}
+
+function containsProtoFiles(dir: string): boolean {
+  try {
+    return fs.readdirSync(dir).some(f => f.endsWith('.proto'))
+  } catch {
+    return false
   }
 }
 
@@ -134,13 +154,16 @@ export function formatReport(r: InitResult): string {
   const lines: string[] = []
   lines.push('grpc-client initialized.')
   lines.push(`  config:    ${r.configPath}${r.createdConfig ? '' : ' (kept existing)'}`)
-  lines.push(`  .mcp.json: ${r.mcpPath} (grpc-client server registered)`)
-  if (r.gitignorePath) {
-    lines.push(`  .gitignore: ${r.gitignorePath}${r.appendedGitignore ? ' (added .grpc-client/)' : ' (already had .grpc-client/)'}`)
+  lines.push(`  .mcp.json: ${r.mcpPath}${r.mcpChanged ? ' (grpc-client server registered)' : ' (already up to date)'}`)
+  if (r.gitignore) {
+    lines.push(`  .gitignore: ${r.gitignore.path}${r.gitignore.appended ? ' (added .grpc-client/)' : ' (already had .grpc-client/)'}`)
+  }
+  if (r.skills.length) {
+    lines.push(`  skills:    deployed ${r.skills.length} → ${r.skills.join(', ')}`)
   }
   lines.push(`  protoDir:  ${r.protoDir ?? 'NOT DETECTED — edit config.json before first call'}`)
   lines.push('')
   lines.push('Next: open the config and fill in host/headers/cookies, then restart Claude Code.')
-  lines.push('To import a curl request as a profile, paste it into Claude and call the `grpc_import_curl` tool.')
+  lines.push('To refresh session: paste a curl from DevTools and Claude will call `grpc_import_curl`.')
   return lines.join('\n')
 }

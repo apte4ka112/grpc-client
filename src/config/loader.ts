@@ -1,9 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { CONFIG_FILE, DIR_NAME } from './paths.js'
 import { ConfigSchema, type Config, type Profile } from './schema.js'
-
-const DIR_NAME = '.grpc-client'
-const FILE_NAME = 'config.json'
 
 export interface LoadedConfig {
   source: 'env-json' | 'file'
@@ -38,7 +36,7 @@ function loadInline(jsonString: string): LoadedConfig {
 function loadFromFile(explicit?: string): LoadedConfig {
   const resolved = explicit
     ? path.resolve(explicit)
-    : path.resolve(process.cwd(), DIR_NAME, FILE_NAME)
+    : path.resolve(process.cwd(), DIR_NAME, CONFIG_FILE)
   const configDir = path.dirname(resolved)
   const dataDir = path.basename(configDir) === DIR_NAME
     ? configDir
@@ -55,7 +53,7 @@ function loadFromFile(explicit?: string): LoadedConfig {
         throw new Error(
           `Config not found: ${resolved}. ` +
             `Set GRPC_CLIENT_CONFIG to either a JSON config string or an absolute path, ` +
-            `or create ./${DIR_NAME}/${FILE_NAME}.`
+            `or create ./${DIR_NAME}/${CONFIG_FILE}.`
         )
       }
       throw err

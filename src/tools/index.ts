@@ -1,6 +1,8 @@
 import fs from 'node:fs'
+import { status as GrpcStatus } from '@grpc/grpc-js'
 import { z } from 'zod'
 import { getProfile, type LoadedConfig } from '../config/loader.js'
+import { PACKAGE_REF } from '../config/paths.js'
 import { RuntimeOverridesSchema, type Profile, type RuntimeOverrides } from '../config/schema.js'
 import { buildCookieString, callGrpc, describeMethod, describeService, listServices } from '../grpc.js'
 import { parseCurl } from '../cli/curl.js'
@@ -31,7 +33,6 @@ const ImportCurlArgs = z.object({
   curl: z.string(),
   profile: z.string().optional(),
   replace: z.boolean().default(false),
-  updateHost: z.boolean().default(false),
   host: z.string().optional()
 })
 
@@ -125,38 +126,28 @@ export function buildTools(cfg: LoadedConfig): ToolDef[] {
     },
     {
       name: 'grpc_import_curl',
-      description: 'Parse a curl command (e.g. Chrome DevTools Copy as cURL) and merge its headers and cookies into a profile in .grpc-client/config.json. By default does NOT touch host or protoDir — typical use is refreshing CSRF token and session cookies from a fresh browser request. Pass replace: true to overwrite headers/cookies instead of merging. Pass updateHost: true (or an explicit host string) only when you intentionally want to retarget the profile. Requires file-config mode.',
+      description: 'Parse a curl command (e.g. Chrome DevTools Copy as cURL) and merge its headers and cookies into a profile in .grpc-client/config.json. By default does NOT touch host or protoDir — typical use is refreshing CSRF token and session cookies from a fresh browser request. Pass replace: true to overwrite headers/cookies instead of merging. Pass an explicit `host` string only when you intentionally want to retarget the profile. Requires file-config mode.',
       inputSchema: jsonSchema(ImportCurlArgs),
       handler: async input => {
         const a = ImportCurlArgs.parse(input)
         if (cfg.source !== 'file' || !cfg.filePath) {
-          return {
-            error: true,
-            code: 9,
-            status: 'FAILED_PRECONDITION',
-            message: 'grpc_import_curl works only in file-config mode. Re-init with `npx github:apte4ka112/grpc-client init` (drop GRPC_CLIENT_CONFIG env from .mcp.json).'
-          }
+          return precondition(`grpc_import_curl works only in file-config mode. Re-init with \`npx ${PACKAGE_REF} init\` (drop GRPC_CLIENT_CONFIG env from .mcp.json).`)
         }
         try {
           const parsed = parseCurl(a.curl)
           const raw = JSON.parse(fs.readFileSync(cfg.filePath, 'utf8'))
           raw.profiles = raw.profiles ?? {}
           const profileName = a.profile ?? raw.active
-          if (!profileName) return { error: true, code: 9, status: 'FAILED_PRECONDITION', message: 'no profile name (config has no active, none passed)' }
+          if (!profileName) return precondition('no profile name (config has no active, none passed)')
           const existing = raw.profiles[profileName]
           if (!existing) {
-            return {
-              error: true,
-              code: 9,
-              status: 'FAILED_PRECONDITION',
-              message: `Profile "${profileName}" not found. Add it with host + proto.protoDir first, then re-run grpc_import_curl.`
-            }
+            return precondition(`Profile "${profileName}" not found. Add it with host + proto.protoDir first, then re-run grpc_import_curl.`)
           }
           const nextHeaders = a.replace ? parsed.headers : { ...(existing.headers ?? {}), ...parsed.headers }
           const nextCookies = a.replace ? parsed.cookies : { ...(existing.cookies ?? {}), ...parsed.cookies }
-          const nextHost = a.host ?? (a.updateHost ? parsed.host : existing.host)
+          const nextHost = a.host ?? existing.host
           raw.profiles[profileName] = { ...existing, host: nextHost, headers: nextHeaders, cookies: nextCookies }
-          fs.writeFileSync(cfg.filePath, JSON.stringify(raw, null, 2) + '\n')
+          atomicWriteJson(cfg.filePath, raw)
           return {
             profile: profileName,
             curlUrl: parsed.url,
@@ -173,6 +164,16 @@ export function buildTools(cfg: LoadedConfig): ToolDef[] {
       }
     }
   ]
+}
+
+function precondition(message: string) {
+  return formatError(Object.assign(new Error(message), { code: GrpcStatus.FAILED_PRECONDITION }))
+}
+
+function atomicWriteJson(filePath: string, value: unknown): void {
+  const tmp = `${filePath}.tmp`
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n')
+  fs.renameSync(tmp, filePath)
 }
 
 function applyOverrides(base: Profile, ov: RuntimeOverrides): Profile {

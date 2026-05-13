@@ -1,8 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { CALLS_FILE } from '../config/paths.js'
 import { logger } from './logger.js'
 
-const FILE_NAME = 'calls.jsonl'
 const MAX_FIELD_BYTES = 16 * 1024
 const ensuredDirs = new Set<string>()
 
@@ -25,7 +25,7 @@ export function appendCallLog(dataDir: string, entry: CallLogEntry): void {
       ensuredDirs.add(dataDir)
     }
     const safe = { ...entry, request: truncate(entry.request) }
-    fs.appendFileSync(path.join(dataDir, FILE_NAME), JSON.stringify(safe) + '\n')
+    fs.appendFileSync(path.join(dataDir, CALLS_FILE), JSON.stringify(safe) + '\n')
   } catch (err) {
     logger.warn({ err: (err as Error).message, dataDir }, 'failed to write calls.jsonl')
   }
