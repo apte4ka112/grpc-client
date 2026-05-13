@@ -2,7 +2,8 @@
 
 **MCP-сервер — кнопка Send для native gRPC.**
 
-Минимальный TypeScript MCP server (stdio) поверх `@grpc/grpc-js`. Один транспорт, unary вызовы, профили + per-call оверрайды на headers/cookies/timeout/host.
+Минимальный TypeScript MCP server (stdio) поверх `@grpc/grpc-js`. Один транспорт, unary вызовы.
+Сам репозиторий **не хранит данных** — конфиг, токены, куки и лог запросов лежат в `.grpc-client/` хост-проекта.
 
 ```
 Claude / MCP client
@@ -18,11 +19,13 @@ Claude / MCP client
     src/grpc.ts (callGrpc / describe / listServices)
              ▼
         @grpc/grpc-js
+             ▼
+   <host-project>/.grpc-client/calls.jsonl   (append-only лог)
 ```
 
 ---
 
-## Установка
+## Установка (репо)
 
 ```sh
 cd /Users/movchan/grpc-client
@@ -30,51 +33,81 @@ npm install
 npm run build
 ```
 
-Запуск:
-```sh
-node dist/index.js
-npm run dev      # tsx watch
-```
-
 ---
 
-## Конфиг (`profiles.json`)
+## Подключение в хост-проекте
 
-Путь: `./profiles.json` или `GRPC_CLIENT_CONFIG=/absolute/path`.
+В корне хост-проекта (там, где лежит его `package.json`) создаёшь папку `.grpc-client/` с двумя вещами:
+
+```
+<host-project>/
+├── .grpc-client/
+│   ├── config.json          ← профили, host, headers, cookies
+│   └── calls.jsonl          ← (генерируется) append-only лог вызовов
+└── .mcp.json                ← регистрация MCP-сервера
+```
+
+Минимальный `<host-project>/.mcp.json`:
+```jsonc
+{
+  "mcpServers": {
+    "grpc-client": {
+      "command": "node",
+      "args": ["/Users/movchan/grpc-client/dist/index.js"]
+    }
+  }
+}
+```
+MCP запускается с `cwd` = корень хост-проекта, поэтому сам находит `./.grpc-client/config.json`.
+Если конфиг лежит в другом месте — `env: { "GRPC_CLIENT_CONFIG": "/abs/path/config.json" }`.
+
+### `config.json`
+
+Пример: `examples/host-project-config.example.json`.
 
 ```jsonc
 {
   "active": "dev",
-  "debug": false,
   "logLevel": "info",
   "profiles": {
     "dev": {
       "host": "grpc.dev.example.com:443",
-      "proto": { "protoDir": "/abs/path/to/proto/root" },
-      "headers": { "x-metadata-language": "rus" },
-      "cookies": {},
+      "proto": { "protoDir": "../node_modules/@your-org/api-client/proto" },
+      "headers": { "x-csrf-token": "..." },
+      "cookies": { "SHOP_SESSION_TOKEN": "..." },
       "timeoutMs": 30000
     }
   }
 }
 ```
 
-### Поля профиля
+| Поле               | Что это                                                                            |
+| ------------------ | ---------------------------------------------------------------------------------- |
+| `host`             | `host:port`, всегда TLS                                                            |
+| `proto.protoDir`   | Путь к корню `.proto`. Относительный — резолвится **от директории config.json**    |
+| `headers`          | gRPC Metadata                                                                      |
+| `cookies`          | Seed-куки, склеиваются в `cookie:` metadata                                        |
+| `timeoutMs`        | Дедлайн на вызов (default 30000)                                                   |
 
-| Поле               | Что это                                                        |
-| ------------------ | -------------------------------------------------------------- |
-| `host`             | `host:port`, всегда TLS                                        |
-| `proto.protoDir`   | Корень с `.proto` (импорты резолвятся рекурсивно)              |
-| `headers`          | gRPC Metadata                                                  |
-| `cookies`          | Seed-куки, шлются как `cookie:` metadata                       |
-| `timeoutMs`        | Дедлайн на вызов (default 30000)                               |
+**Обновление куки/CSRF:** просто правишь `config.json`. Каждый `grpc_call` перечитывает файл — рестарт MCP не нужен.
+
+### Лог запросов
+
+`<host-project>/.grpc-client/calls.jsonl` — по одной JSON-строке на каждый `grpc_call` (включая `dryRun` и ошибки):
+```json
+{"ts":"2026-05-13T11:42:01.234Z","profile":"dev","target":"api.customer.v1.CustomerProfileAPI/GetNotifications","host":"grpc.dev.example.com:443","durationMs":142,"status":{"code":0,"name":"OK"},"request":{},"responseBytes":318}
+{"ts":"2026-05-13T11:42:09.012Z","profile":"dev","target":"ProductAPI/GetProductShortForecast","host":"grpc.dev.example.com:443","error":{"code":16,"status":"UNAUTHENTICATED","message":"invalid session"},"request":{"productIds":[1,2]}}
+```
+
+Полезно: `tail -f .grpc-client/calls.jsonl | jq .` или `grep '"UNAUTHENTICATED"' .grpc-client/calls.jsonl`.
+
+`.grpc-client/` стоит положить в `.gitignore` хост-проекта.
 
 ---
 
 ## MCP tools
 
 ### `grpc_call`
-
 ```jsonc
 {
   "profile": "dev",                       // optional, default = active
@@ -105,8 +138,7 @@ npm run dev      # tsx watch
   "durationMs": 142
 }
 ```
-
-На ошибке возвращается `{ "error": true, "code": N, "status": "...", "message": "..." }`.
+На ошибке: `{ "error": true, "code": N, "status": "...", "message": "..." }`.
 
 ### `grpc_list_services`
 ```jsonc
@@ -121,25 +153,11 @@ npm run dev      # tsx watch
 
 ---
 
-## Интеграция с Claude Desktop / Claude Code
+## Discovery порядок
 
-`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS):
-```jsonc
-{
-  "mcpServers": {
-    "grpc-client": {
-      "command": "node",
-      "args": ["/Users/movchan/grpc-client/dist/index.js"],
-      "env": {
-        "GRPC_CLIENT_CONFIG": "/Users/movchan/grpc-client/profiles.json",
-        "GRPC_CLIENT_LOG_LEVEL": "info"
-      }
-    }
-  }
-}
-```
-
-Для Claude Code положить тот же блок в `.mcp.json` или `~/.claude.json`. Для смены активного профиля — править `profiles.json` и рестарт MCP (или передавать `profile: "..."` в каждом вызове).
+1. `GRPC_CLIENT_CONFIG=/abs/path/config.json` (env)
+2. `./.grpc-client/config.json` (от cwd)
+3. иначе — ошибка с подсказкой.
 
 ---
 
@@ -148,42 +166,15 @@ npm run dev      # tsx watch
 ```sh
 GRPC_CLIENT_LOG_LEVEL=debug node dist/index.js
 ```
-Или `"debug": true` в конфиге, или `"debug": true` per-call. Логи (pino structured JSON) — в stderr; stdout зарезервирован под MCP протокол.
-
----
-
-## Структура
-
-```
-grpc-client/
-├── src/
-│   ├── index.ts           — entry
-│   ├── server.ts          — MCP server (stdio)
-│   ├── grpc.ts            — callGrpc / describe / listServices + cookies + sanitize
-│   ├── config/
-│   │   ├── schema.ts      — zod схемы
-│   │   └── loader.ts      — loadConfig + getProfile (read-only)
-│   ├── proto/resolver.ts  — рекурсивная загрузка .proto, кэш
-│   ├── tools/index.ts     — 3 MCP tools + jsonSchema converter
-│   └── utils/
-│       ├── logger.ts      — pino → stderr
-│       └── errors.ts      — formatError
-├── examples/
-│   ├── claude-desktop.json
-│   ├── request.json
-│   └── get-notifications.json
-├── profiles.json
-├── package.json
-├── tsconfig.json
-└── README.md
-```
+Или `"debug": true` в конфиге, или `"debug": true` per-call.
+Логи pino (structured JSON) — в **stderr**; stdout зарезервирован под MCP protocol.
 
 ---
 
 ## Ограничения
 
 - **Только unary RPC.** Streaming — намеренно не поддерживается.
-- **Только TLS.** Plaintext gRPC и mTLS убраны (можно вернуть при необходимости).
+- **Только TLS.** Plaintext gRPC и mTLS убраны.
 - **Auth — через `headers`/`cookies`.** Никаких разных типов аутентификации в схеме.
-- **profile-switching:** не через MCP tool; править `profiles.json` или передавать `profile: "..."` в каждом вызове.
 - **Reflection не используется** — нужен локальный `.proto`.
+- **profile switching:** менять `active` в `config.json` или передавать `profile: "..."` per call.

@@ -1,11 +1,11 @@
 {
-  "_comment": "Drop this into ~/Library/Application Support/Claude/claude_desktop_config.json (macOS) or %APPDATA%/Claude/claude_desktop_config.json (Windows). Restart Claude Desktop afterwards. For Claude Code, put under .mcp.json or ~/.claude.json with the same shape.",
+  "_comment": "Drop this into ~/Library/Application Support/Claude/claude_desktop_config.json (macOS) or %APPDATA%/Claude/claude_desktop_config.json (Windows). For Claude Code, prefer <host-project>/.mcp.json — the MCP cwd matches your project root and grpc-client will auto-discover ./.grpc-client/config.json. Use GRPC_CLIENT_CONFIG only when the config lives elsewhere.",
   "mcpServers": {
     "grpc-client": {
       "command": "node",
       "args": ["/Users/movchan/grpc-client/dist/index.js"],
       "env": {
-        "GRPC_CLIENT_CONFIG": "/Users/movchan/grpc-client/profiles.json",
+        "GRPC_CLIENT_CONFIG": "/abs/path/to/your-host-project/.grpc-client/config.json",
         "GRPC_CLIENT_LOG_LEVEL": "info"
       }
     }

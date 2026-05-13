@@ -1,0 +1,28 @@
+{
+  "_comment": "Place this at <host-project>/.grpc-client/config.json. protoDir is resolved relative to this file's directory. Cookies/headers may be edited any time — every grpc_call re-reads the file.",
+  "active": "dev",
+  "logLevel": "info",
+  "debug": false,
+  "profiles": {
+    "dev": {
+      "host": "grpc.dev.example.com:443",
+      "proto": { "protoDir": "../node_modules/@your-org/api-client/proto" },
+      "headers": {
+        "x-metadata-language": "rus",
+        "x-metadata-region": "1",
+        "x-csrf-token": "REPLACE_ME"
+      },
+      "cookies": {
+        "SHOP_SESSION_TOKEN": "REPLACE_ME",
+        "CSRF-Token": "REPLACE_ME"
+      },
+      "timeoutMs": 30000
+    },
+    "prod": {
+      "host": "grpc.example.com:443",
+      "proto": { "protoDir": "../node_modules/@your-org/api-client/proto" },
+      "headers": { "x-metadata-language": "rus" },
+      "cookies": {}
+    }
+  }
+}

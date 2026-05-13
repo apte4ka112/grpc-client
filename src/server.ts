@@ -8,8 +8,12 @@ import { closeAllClients } from './grpc.js'
 
 export async function startServer() {
   const cfg = loadConfig()
-  setLogLevel(process.env.GRPC_CLIENT_LOG_LEVEL ?? cfg.data.logLevel)
-  logger.info({ filePath: cfg.filePath, active: cfg.data.active, profiles: Object.keys(cfg.data.profiles) }, 'config loaded')
+  const initial = cfg.read()
+  setLogLevel(process.env.GRPC_CLIENT_LOG_LEVEL ?? initial.logLevel)
+  logger.info(
+    { filePath: cfg.filePath, dataDir: cfg.dataDir, active: initial.active, profiles: Object.keys(initial.profiles) },
+    'config loaded'
+  )
 
   const tools = buildTools(cfg)
   const toolMap = new Map(tools.map(t => [t.name, t]))

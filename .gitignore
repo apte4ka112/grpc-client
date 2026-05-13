@@ -4,7 +4,5 @@ dist/
 .DS_Store
 .browser-profiles/
 .playwright-state.json
-profiles.json
-profiles.*.json
-!profiles.example.json
+.grpc-client/
 .idea/

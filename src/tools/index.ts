@@ -4,6 +4,7 @@ import { RuntimeOverridesSchema, type Profile, type RuntimeOverrides } from '../
 import { buildCookieString, callGrpc, describe, listServices } from '../grpc.js'
 import { formatError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
+import { appendCallLog } from '../utils/calllog.js'
 
 export interface ToolDef {
   name: string
@@ -28,22 +29,25 @@ export function buildTools(cfg: LoadedConfig): ToolDef[] {
   return [
     {
       name: 'grpc_call',
-      description: 'Send a unary gRPC request. Per-call overrides (headers, cookies, timeout, host) take precedence over the profile. Returns JSON response with status, trailers and timing. dryRun: build the request without sending.',
+      description: 'Send a unary gRPC request. Per-call overrides (headers, cookies, timeout, host) take precedence over the profile. Returns JSON response with status, trailers and timing. dryRun: build the request without sending. Every call is appended to .grpc-client/calls.jsonl.',
       inputSchema: jsonSchema(GrpcCallArgs),
       handler: async input => {
         const a = GrpcCallArgs.parse(input)
-        const { name: profileName, profile } = getProfile(cfg, a.profile)
+        const data = cfg.read()
+        const { name: profileName, profile } = getProfile(data, a.profile)
         const merged = applyOverrides(profile, a)
         const metadata = { ...merged.headers }
         const cookieHeader = buildCookieString(merged.cookies)
         if (cookieHeader) metadata['cookie'] = cookieHeader
         const target = `${a.service}/${a.method}`
+        const startedAt = new Date().toISOString()
         if (a.dryRun) {
+          appendCallLog(cfg.dataDir, { ts: startedAt, profile: profileName, target, host: merged.host, dryRun: true, request: a.data })
           return { dryRun: true, profile: profileName, host: merged.host, target, headers: metadata, cookieHeader, timeoutMs: merged.timeoutMs, data: a.data }
         }
         logger.info({ profile: profileName, target }, 'grpc_call')
         try {
-          return await callGrpc({
+          const result = await callGrpc({
             profileName,
             profile: merged,
             service: a.service,
@@ -51,10 +55,30 @@ export function buildTools(cfg: LoadedConfig): ToolDef[] {
             data: a.data,
             metadata,
             timeoutMs: merged.timeoutMs,
-            debug: a.debug ?? cfg.data.debug
+            debug: a.debug ?? data.debug
           })
+          appendCallLog(cfg.dataDir, {
+            ts: startedAt,
+            profile: profileName,
+            target,
+            host: merged.host,
+            durationMs: result.durationMs,
+            status: result.status,
+            request: a.data,
+            responseBytes: JSON.stringify(result.response ?? null).length
+          })
+          return result
         } catch (err) {
-          return formatError(err)
+          const formatted = formatError(err)
+          appendCallLog(cfg.dataDir, {
+            ts: startedAt,
+            profile: profileName,
+            target,
+            host: merged.host,
+            error: { code: formatted.code, status: formatted.status, message: formatted.message },
+            request: a.data
+          })
+          return formatted
         }
       }
     },
@@ -64,7 +88,8 @@ export function buildTools(cfg: LoadedConfig): ToolDef[] {
       inputSchema: jsonSchema(ListServicesArgs),
       handler: async input => {
         const a = ListServicesArgs.parse(input)
-        const { name: profileName, profile } = getProfile(cfg, a.profile)
+        const data = cfg.read()
+        const { name: profileName, profile } = getProfile(data, a.profile)
         try {
           const services = listServices(profile)
           return { profile: profileName, count: services.length, services }
@@ -79,7 +104,8 @@ export function buildTools(cfg: LoadedConfig): ToolDef[] {
       inputSchema: jsonSchema(DescribeArgs),
       handler: async input => {
         const a = DescribeArgs.parse(input)
-        const { name: profileName, profile } = getProfile(cfg, a.profile)
+        const data = cfg.read()
+        const { name: profileName, profile } = getProfile(data, a.profile)
         try {
           return { profile: profileName, ...describe(profile, a.service, a.method) }
         } catch (err) {
