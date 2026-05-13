@@ -11,7 +11,7 @@ export async function startServer() {
   const initial = cfg.read()
   setLogLevel(process.env.GRPC_CLIENT_LOG_LEVEL ?? initial.logLevel)
   logger.info(
-    { filePath: cfg.filePath, dataDir: cfg.dataDir, active: initial.active, profiles: Object.keys(initial.profiles) },
+    { source: cfg.source, filePath: cfg.filePath, dataDir: cfg.dataDir, active: initial.active, profiles: Object.keys(initial.profiles) },
     'config loaded'
   )
 

@@ -5,21 +5,40 @@ import { ConfigSchema, type Config, type Profile } from './schema.js'
 const DIR_NAME = '.grpc-client'
 const FILE_NAME = 'config.json'
 
-function resolveConfigPath(explicit?: string): string {
-  if (explicit) return path.resolve(explicit)
-  const env = process.env.GRPC_CLIENT_CONFIG
-  if (env) return path.resolve(env)
-  return path.resolve(process.cwd(), DIR_NAME, FILE_NAME)
-}
-
 export interface LoadedConfig {
-  filePath: string
+  source: 'env-json' | 'file'
+  filePath?: string
   dataDir: string
   read(): Config
 }
 
-export function loadConfig(filePath?: string): LoadedConfig {
-  const resolved = resolveConfigPath(filePath)
+export function loadConfig(explicit?: string): LoadedConfig {
+  const raw = explicit ?? process.env.GRPC_CLIENT_CONFIG
+  if (raw && raw.trim().startsWith('{')) {
+    return loadInline(raw)
+  }
+  return loadFromFile(explicit)
+}
+
+function loadInline(jsonString: string): LoadedConfig {
+  const cwd = process.cwd()
+  const dataDir = path.join(cwd, DIR_NAME)
+  let cached: Config | null = null
+
+  const read = (): Config => {
+    if (cached) return cached
+    cached = parseAndResolve(jsonString, cwd)
+    return cached
+  }
+
+  read() // fail fast
+  return { source: 'env-json', dataDir, read }
+}
+
+function loadFromFile(explicit?: string): LoadedConfig {
+  const resolved = explicit
+    ? path.resolve(explicit)
+    : path.resolve(process.cwd(), DIR_NAME, FILE_NAME)
   const configDir = path.dirname(resolved)
   const dataDir = path.basename(configDir) === DIR_NAME
     ? configDir
@@ -35,27 +54,31 @@ export function loadConfig(filePath?: string): LoadedConfig {
       if (err?.code === 'ENOENT') {
         throw new Error(
           `Config not found: ${resolved}. ` +
-            `Create ./${DIR_NAME}/${FILE_NAME} in the host project, ` +
-            `or set GRPC_CLIENT_CONFIG=/abs/path.`
+            `Set GRPC_CLIENT_CONFIG to either a JSON config string or an absolute path, ` +
+            `or create ./${DIR_NAME}/${FILE_NAME}.`
         )
       }
       throw err
     }
     if (cached && cached.mtimeMs === stat.mtimeMs) return cached.data
-
-    const parsed = ConfigSchema.parse(JSON.parse(fs.readFileSync(resolved, 'utf8')))
-    if (!parsed.profiles[parsed.active]) {
-      throw new Error(`Active profile "${parsed.active}" missing from profiles.`)
-    }
-    for (const [name, p] of Object.entries(parsed.profiles)) {
-      parsed.profiles[name] = { ...p, proto: { protoDir: path.resolve(configDir, p.proto.protoDir) } }
-    }
-    cached = { mtimeMs: stat.mtimeMs, data: parsed }
-    return parsed
+    const data = parseAndResolve(fs.readFileSync(resolved, 'utf8'), configDir)
+    cached = { mtimeMs: stat.mtimeMs, data }
+    return data
   }
 
-  read() // fail fast at startup
-  return { filePath: resolved, dataDir, read }
+  read() // fail fast
+  return { source: 'file', filePath: resolved, dataDir, read }
+}
+
+function parseAndResolve(jsonString: string, baseDir: string): Config {
+  const parsed = ConfigSchema.parse(JSON.parse(jsonString))
+  if (!parsed.profiles[parsed.active]) {
+    throw new Error(`Active profile "${parsed.active}" missing from profiles.`)
+  }
+  for (const [name, p] of Object.entries(parsed.profiles)) {
+    parsed.profiles[name] = { ...p, proto: { protoDir: path.resolve(baseDir, p.proto.protoDir) } }
+  }
+  return parsed
 }
 
 export function getProfile(cfg: Config, name?: string): { name: string; profile: Profile } {
