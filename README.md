@@ -33,7 +33,7 @@ Claude / MCP client
   "mcpServers": {
     "grpc-client": {
       "command": "npx",
-      "args": ["-y", "github:apte4ka112/grpc-client"],
+      "args": ["github:apte4ka112/grpc-client"],
       "env": {
         "GRPC_CLIENT_CONFIG": "{\"active\":\"dev\",\"profiles\":{\"dev\":{\"host\":\"grpc.dev.example.com:443\",\"proto\":{\"protoDir\":\"./node_modules/@your-org/api-client/proto\"},\"headers\":{\"x-csrf-token\":\"...\"},\"cookies\":{\"SHOP_SESSION_TOKEN\":\"...\"}}}}"
       }
