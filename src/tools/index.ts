@@ -226,7 +226,8 @@ function applyOverrides(base: Profile, ov: RuntimeOverrides): Profile {
     timeoutMs: ov.timeoutMs ?? base.timeoutMs,
     headers: { ...base.headers, ...(ov.headers ?? {}) },
     cookies: { ...base.cookies, ...(ov.cookies ?? {}) },
-    proto: ov.proto ?? base.proto
+    proto: ov.proto ?? base.proto,
+    insecureSkipVerify: base.insecureSkipVerify
   }
 }
 

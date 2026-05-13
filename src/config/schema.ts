@@ -5,7 +5,8 @@ export const ProfileSchema = z.object({
   proto: z.object({ protoDir: z.string() }),
   headers: z.record(z.string()).default({}),
   cookies: z.record(z.string()).default({}),
-  timeoutMs: z.number().int().positive().default(10000)
+  timeoutMs: z.number().int().positive().default(10000),
+  insecureSkipVerify: z.boolean().default(false)
 })
 export type Profile = z.infer<typeof ProfileSchema>
 

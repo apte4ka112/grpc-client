@@ -80,10 +80,14 @@ export async function callGrpc(input: CallInput): Promise<CallResult> {
 
   const ServiceCtor = getServiceCtor(loaded, svc.fullName)
   const target = normalizeTarget(input.profile.host)
-  const cacheKey = `${input.profileName}|${target}`
+  const insecure = !!input.profile.insecureSkipVerify
+  const cacheKey = `${input.profileName}|${target}|${insecure ? 'noverify' : 'strict'}`
   let client = clients.get(cacheKey)
   if (!client) {
-    client = new ServiceCtor(target, grpc.credentials.createSsl())
+    const creds = insecure
+      ? grpc.credentials.createSsl(null, null, null, { rejectUnauthorized: false, checkServerIdentity: () => undefined })
+      : grpc.credentials.createSsl()
+    client = new ServiceCtor(target, creds)
     clients.set(cacheKey, client)
   }
   const methodFn = (client as unknown as Record<string, Function>)[input.method]
