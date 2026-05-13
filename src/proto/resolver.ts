@@ -1,6 +1,8 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import protobuf from 'protobufjs'
+import * as grpc from '@grpc/grpc-js'
+import * as protoLoader from '@grpc/proto-loader'
 
 export interface MethodMeta {
   name: string
@@ -23,6 +25,7 @@ export interface LoadedProto {
   services: Map<string, ServiceMeta>
   files: string[]
   rootDir: string
+  grpcObject: grpc.GrpcObject
 }
 
 const cache = new Map<string, LoadedProto>()
@@ -32,8 +35,6 @@ export function loadProto(protoDir: string): LoadedProto {
   const hit = cache.get(key)
   if (hit) return hit
 
-  if (!fs.existsSync(key)) throw new Error(`protoDir does not exist: ${key}`)
-
   const root = new protobuf.Root()
   root.resolvePath = (_origin, target) => {
     if (path.isAbsolute(target) && fs.existsSync(target)) return target
@@ -41,14 +42,50 @@ export function loadProto(protoDir: string): LoadedProto {
     return fs.existsSync(candidate) ? candidate : target
   }
 
-  const files = walk(key)
+  let files: string[]
+  try {
+    files = fs.readdirSync(key, { recursive: true })
+      .filter((name): name is string => typeof name === 'string' && name.endsWith('.proto'))
+      .map(name => path.join(key, name))
+  } catch (err: any) {
+    if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') {
+      throw new Error(`protoDir does not exist or is not a directory: ${key}`)
+    }
+    throw err
+  }
   if (files.length === 0) throw new Error(`No .proto files under ${key}`)
   root.loadSync(files)
 
   const services = collectServices(root)
-  const loaded: LoadedProto = { root, services, files, rootDir: key }
+  const pkgDef = protoLoader.loadSync([...files], {
+    longs: String,
+    enums: String,
+    defaults: true,
+    oneofs: true,
+    includeDirs: [key]
+  })
+  const grpcObject = grpc.loadPackageDefinition(pkgDef)
+  const loaded: LoadedProto = { root, services, files, rootDir: key, grpcObject }
   cache.set(key, loaded)
   return loaded
+}
+
+export type ServiceClientCtor = new (
+  target: string,
+  credentials: grpc.ChannelCredentials,
+  options?: grpc.ClientOptions
+) => grpc.Client & Record<string, Function>
+
+export function getServiceCtor(loaded: LoadedProto, fullName: string): ServiceClientCtor {
+  let cur: unknown = loaded.grpcObject
+  for (const p of fullName.split('.')) {
+    if (!cur || typeof cur !== 'object' || !(p in (cur as Record<string, unknown>))) {
+      throw new Error(`Service ctor not found for ${fullName}`)
+    }
+    cur = (cur as Record<string, unknown>)[p]
+  }
+  if (typeof cur !== 'function') throw new Error(`Service ctor not found for ${fullName}`)
+  return cur as ServiceClientCtor
 }
 
 function collectServices(root: protobuf.Root): Map<string, ServiceMeta> {
@@ -81,15 +118,6 @@ function collectServices(root: protobuf.Root): Map<string, ServiceMeta> {
   }
   visit(root)
   return services
-}
-
-function walk(dir: string, out: string[] = []): string[] {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    const p = path.join(dir, e.name)
-    if (e.isDirectory()) walk(p, out)
-    else if (e.isFile() && p.endsWith('.proto')) out.push(p)
-  }
-  return out
 }
 
 export function resolveService(loaded: LoadedProto, input: string): ServiceMeta {

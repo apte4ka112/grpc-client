@@ -4,6 +4,7 @@ import { logger } from './logger.js'
 
 const FILE_NAME = 'calls.jsonl'
 const MAX_FIELD_BYTES = 16 * 1024
+const ensuredDirs = new Set<string>()
 
 export interface CallLogEntry {
   ts: string
@@ -15,12 +16,14 @@ export interface CallLogEntry {
   error?: { code: number; status: string; message: string }
   dryRun?: boolean
   request?: unknown
-  responseBytes?: number
 }
 
 export function appendCallLog(dataDir: string, entry: CallLogEntry): void {
   try {
-    fs.mkdirSync(dataDir, { recursive: true })
+    if (!ensuredDirs.has(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true })
+      ensuredDirs.add(dataDir)
+    }
     const safe = { ...entry, request: truncate(entry.request) }
     fs.appendFileSync(path.join(dataDir, FILE_NAME), JSON.stringify(safe) + '\n')
   } catch (err) {

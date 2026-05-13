@@ -20,19 +20,29 @@ export interface LoadedConfig {
 
 export function loadConfig(filePath?: string): LoadedConfig {
   const resolved = resolveConfigPath(filePath)
-  if (!fs.existsSync(resolved)) {
-    throw new Error(
-      `Config not found: ${resolved}. ` +
-        `Create ./${DIR_NAME}/${FILE_NAME} in the host project, ` +
-        `or set GRPC_CLIENT_CONFIG=/abs/path.`
-    )
-  }
   const configDir = path.dirname(resolved)
   const dataDir = path.basename(configDir) === DIR_NAME
     ? configDir
     : path.join(configDir, DIR_NAME)
 
+  let cached: { mtimeMs: number; data: Config } | null = null
+
   const read = (): Config => {
+    let stat: fs.Stats
+    try {
+      stat = fs.statSync(resolved)
+    } catch (err: any) {
+      if (err?.code === 'ENOENT') {
+        throw new Error(
+          `Config not found: ${resolved}. ` +
+            `Create ./${DIR_NAME}/${FILE_NAME} in the host project, ` +
+            `or set GRPC_CLIENT_CONFIG=/abs/path.`
+        )
+      }
+      throw err
+    }
+    if (cached && cached.mtimeMs === stat.mtimeMs) return cached.data
+
     const parsed = ConfigSchema.parse(JSON.parse(fs.readFileSync(resolved, 'utf8')))
     if (!parsed.profiles[parsed.active]) {
       throw new Error(`Active profile "${parsed.active}" missing from profiles.`)
@@ -40,8 +50,11 @@ export function loadConfig(filePath?: string): LoadedConfig {
     for (const [name, p] of Object.entries(parsed.profiles)) {
       parsed.profiles[name] = { ...p, proto: { protoDir: path.resolve(configDir, p.proto.protoDir) } }
     }
+    cached = { mtimeMs: stat.mtimeMs, data: parsed }
     return parsed
   }
+
+  read() // fail fast at startup
   return { filePath: resolved, dataDir, read }
 }
 

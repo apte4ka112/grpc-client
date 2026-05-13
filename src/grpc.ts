@@ -1,21 +1,48 @@
 import * as grpc from '@grpc/grpc-js'
-import * as protoLoader from '@grpc/proto-loader'
-import type { Type } from 'protobufjs'
+import protobuf, { type Type } from 'protobufjs'
 import type { Profile } from './config/schema.js'
-import { loadProto, resolveMethod, resolveService, type LoadedProto } from './proto/resolver.js'
+import {
+  getServiceCtor,
+  loadProto,
+  resolveMethod,
+  resolveService,
+  type MethodMeta,
+  type ServiceMeta
+} from './proto/resolver.js'
 import { logger } from './utils/logger.js'
+
+export interface Streaming {
+  client: boolean
+  server: boolean
+}
+
+export interface MethodSummary {
+  name: string
+  request: string
+  response: string
+  streaming: Streaming
+}
 
 export interface ServiceListing {
   service: string
-  methods: Array<{ name: string; request: string; response: string; streaming: 'req' | 'resp' | 'req+resp' | null }>
+  methods: MethodSummary[]
+}
+
+export interface FieldInfo {
+  type: string
+  id: number
+  repeated: boolean
+  optional: boolean
+  map: boolean
+  oneof?: string
 }
 
 export interface MethodDescriptor {
   service: string
   method: string
-  request: { name: string; fields: Record<string, unknown> }
-  response: { name: string; fields: Record<string, unknown> }
-  streaming: { client: boolean; server: boolean }
+  request: { name: string; fields: Record<string, FieldInfo> }
+  response: { name: string; fields: Record<string, FieldInfo> }
+  streaming: Streaming
   comment?: string | null
 }
 
@@ -41,7 +68,6 @@ export interface CallInput {
 }
 
 const clients = new Map<string, grpc.Client>()
-const ctorCache = new Map<string, any>()
 
 export async function callGrpc(input: CallInput): Promise<CallResult> {
   const loaded = loadProto(input.profile.proto.protoDir)
@@ -56,8 +82,12 @@ export async function callGrpc(input: CallInput): Promise<CallResult> {
   const cacheKey = `${input.profileName}|${target}`
   let client = clients.get(cacheKey)
   if (!client) {
-    client = new ServiceCtor(target, grpc.credentials.createSsl()) as grpc.Client
+    client = new ServiceCtor(target, grpc.credentials.createSsl())
     clients.set(cacheKey, client)
+  }
+  const methodFn = (client as unknown as Record<string, Function>)[input.method]
+  if (typeof methodFn !== 'function') {
+    throw new Error(`Method ${input.method} not found on client for ${svc.fullName}`)
   }
 
   const md = new grpc.Metadata()
@@ -66,57 +96,48 @@ export async function callGrpc(input: CallInput): Promise<CallResult> {
   const started = Date.now()
   return await new Promise<CallResult>((resolve, reject) => {
     const deadline = Date.now() + input.timeoutMs
-    const call = (client as any)[input.method].bind(client) as Function
     if (input.debug) logger.debug({ target, fullName: svc.fullName, method: input.method }, 'grpc call')
-    call(input.data, md, { deadline }, (err: grpc.ServiceError | null, response: any, trailingMetadata?: grpc.Metadata) => {
-      const durationMs = Date.now() - started
-      if (err) {
-        const trailers = metadataToObject(trailingMetadata ?? err.metadata)
-        const wrapped = err as grpc.ServiceError & { trailers?: Record<string, string> }
-        wrapped.trailers = trailers
-        reject(wrapped)
-        return
+    methodFn.call(
+      client,
+      input.data,
+      md,
+      { deadline },
+      (err: grpc.ServiceError | null, response: unknown, trailingMetadata?: grpc.Metadata) => {
+        const durationMs = Date.now() - started
+        if (err) {
+          const trailers = metadataToObject(trailingMetadata ?? err.metadata)
+          const wrapped = err as grpc.ServiceError & { trailers?: Record<string, string> }
+          wrapped.trailers = trailers
+          reject(wrapped)
+          return
+        }
+        resolve({
+          profile: input.profileName,
+          host: input.profile.host,
+          target: `${svc.fullName}/${input.method}`,
+          status: { code: grpc.status.OK, name: grpc.status[grpc.status.OK] },
+          response,
+          trailers: trailingMetadata ? metadataToObject(trailingMetadata) : undefined,
+          durationMs
+        })
       }
-      resolve({
-        profile: input.profileName,
-        host: input.profile.host,
-        target: `${svc.fullName}/${input.method}`,
-        status: { code: 0, name: 'OK' },
-        response,
-        trailers: trailingMetadata ? metadataToObject(trailingMetadata) : undefined,
-        durationMs
-      })
-    })
+    )
   })
 }
 
 export function listServices(profile: Profile): ServiceListing[] {
   const loaded = loadProto(profile.proto.protoDir)
-  return [...loaded.services.values()].map(s => ({
-    service: s.fullName,
-    methods: Object.values(s.methods).map(m => ({
-      name: m.name,
-      request: m.requestTypeName,
-      response: m.responseTypeName,
-      streaming: streamingTag(m.requestStream, m.responseStream)
-    }))
-  }))
+  return [...loaded.services.values()].map(serviceListing)
 }
 
-export function describe(profile: Profile, service: string, method?: string): MethodDescriptor | ServiceListing {
+export function describeService(profile: Profile, service: string): ServiceListing {
+  const loaded = loadProto(profile.proto.protoDir)
+  return serviceListing(resolveService(loaded, service))
+}
+
+export function describeMethod(profile: Profile, service: string, method: string): MethodDescriptor {
   const loaded = loadProto(profile.proto.protoDir)
   const svc = resolveService(loaded, service)
-  if (!method) {
-    return {
-      service: svc.fullName,
-      methods: Object.values(svc.methods).map(m => ({
-        name: m.name,
-        request: m.requestTypeName,
-        response: m.responseTypeName,
-        streaming: streamingTag(m.requestStream, m.responseStream)
-      }))
-    }
-  }
   const m = resolveMethod(svc, method)
   return {
     service: svc.fullName,
@@ -145,31 +166,17 @@ export function buildCookieString(seedCookies: Record<string, string>): string {
   return parts.join('; ')
 }
 
-function getServiceCtor(loaded: LoadedProto, fullName: string): any {
-  const key = `${loaded.rootDir}|${fullName}`
-  const hit = ctorCache.get(key)
-  if (hit) return hit
-  const pkgDef = protoLoader.loadSync([...loaded.files], {
-    longs: String,
-    enums: String,
-    defaults: true,
-    oneofs: true,
-    includeDirs: [loaded.rootDir]
-  })
-  const grpcObj: any = grpc.loadPackageDefinition(pkgDef)
-  const ctor = traverse(grpcObj, fullName)
-  if (!ctor) throw new Error(`Service ctor not found for ${fullName}`)
-  ctorCache.set(key, ctor)
-  return ctor
+function serviceListing(s: ServiceMeta): ServiceListing {
+  return { service: s.fullName, methods: Object.values(s.methods).map(methodSummary) }
 }
 
-function traverse(root: any, fullName: string): any | null {
-  let cur = root
-  for (const p of fullName.split('.')) {
-    if (!cur || !cur[p]) return null
-    cur = cur[p]
+function methodSummary(m: MethodMeta): MethodSummary {
+  return {
+    name: m.name,
+    request: m.requestTypeName,
+    response: m.responseTypeName,
+    streaming: { client: m.requestStream, server: m.responseStream }
   }
-  return cur
 }
 
 function normalizeTarget(host: string): string {
@@ -177,12 +184,17 @@ function normalizeTarget(host: string): string {
   return /^dns:|^unix:|^ipv[46]:/.test(noScheme) ? noScheme : `dns:///${noScheme}`
 }
 
+const PRINTABLE_ASCII = /^[\x21-\x7e]+$/
+const NEWLINES = /[\r\n]/g
+const FORBIDDEN_HEADERS = new Set(['content-type', 'content-length'])
+
 function sanitizeForGrpc(metadata: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {}
   for (const [k, v] of Object.entries(metadata)) {
-    if (!/^[\x21-\x7e]+$/.test(k)) continue
-    if (k.toLowerCase() === 'content-type' || k.toLowerCase() === 'content-length') continue
-    out[k.toLowerCase()] = String(v).replace(/[\r\n]/g, '')
+    if (!PRINTABLE_ASCII.test(k)) continue
+    const lower = k.toLowerCase()
+    if (FORBIDDEN_HEADERS.has(lower)) continue
+    out[lower] = String(v).replace(NEWLINES, '')
   }
   return out
 }
@@ -199,23 +211,16 @@ function metadataToObject(md: grpc.Metadata | undefined): Record<string, string>
   return out
 }
 
-function streamingTag(req: boolean, resp: boolean): 'req' | 'resp' | 'req+resp' | null {
-  if (req && resp) return 'req+resp'
-  if (req) return 'req'
-  if (resp) return 'resp'
-  return null
-}
-
-function typeFields(T: Type | undefined): Record<string, unknown> {
-  const out: Record<string, unknown> = {}
+function typeFields(T: Type | undefined): Record<string, FieldInfo> {
+  const out: Record<string, FieldInfo> = {}
   if (!T?.fields) return out
-  for (const [name, f] of Object.entries<any>(T.fields)) {
+  for (const [name, f] of Object.entries(T.fields) as Array<[string, protobuf.Field]>) {
     out[name] = {
       type: f.type,
       id: f.id,
       repeated: !!f.repeated,
       optional: !!f.optional,
-      map: !!f.map,
+      map: f instanceof protobuf.MapField,
       oneof: f.partOf?.name
     }
   }

@@ -1,7 +1,8 @@
 import { z } from 'zod'
 import { getProfile, type LoadedConfig } from '../config/loader.js'
 import { RuntimeOverridesSchema, type Profile, type RuntimeOverrides } from '../config/schema.js'
-import { buildCookieString, callGrpc, describe, listServices } from '../grpc.js'
+import { buildCookieString, callGrpc, describeMethod, describeService, listServices } from '../grpc.js'
+import type { CallLogEntry } from '../utils/calllog.js'
 import { formatError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
 import { appendCallLog } from '../utils/calllog.js'
@@ -40,9 +41,15 @@ export function buildTools(cfg: LoadedConfig): ToolDef[] {
         const cookieHeader = buildCookieString(merged.cookies)
         if (cookieHeader) metadata['cookie'] = cookieHeader
         const target = `${a.service}/${a.method}`
-        const startedAt = new Date().toISOString()
+        const base: CallLogEntry = {
+          ts: new Date().toISOString(),
+          profile: profileName,
+          target,
+          host: merged.host,
+          request: a.data
+        }
         if (a.dryRun) {
-          appendCallLog(cfg.dataDir, { ts: startedAt, profile: profileName, target, host: merged.host, dryRun: true, request: a.data })
+          appendCallLog(cfg.dataDir, { ...base, dryRun: true })
           return { dryRun: true, profile: profileName, host: merged.host, target, headers: metadata, cookieHeader, timeoutMs: merged.timeoutMs, data: a.data }
         }
         logger.info({ profile: profileName, target }, 'grpc_call')
@@ -58,25 +65,16 @@ export function buildTools(cfg: LoadedConfig): ToolDef[] {
             debug: a.debug ?? data.debug
           })
           appendCallLog(cfg.dataDir, {
-            ts: startedAt,
-            profile: profileName,
-            target,
-            host: merged.host,
+            ...base,
             durationMs: result.durationMs,
-            status: result.status,
-            request: a.data,
-            responseBytes: JSON.stringify(result.response ?? null).length
+            status: result.status
           })
           return result
         } catch (err) {
           const formatted = formatError(err)
           appendCallLog(cfg.dataDir, {
-            ts: startedAt,
-            profile: profileName,
-            target,
-            host: merged.host,
-            error: { code: formatted.code, status: formatted.status, message: formatted.message },
-            request: a.data
+            ...base,
+            error: { code: formatted.code, status: formatted.status, message: formatted.message }
           })
           return formatted
         }
@@ -107,7 +105,10 @@ export function buildTools(cfg: LoadedConfig): ToolDef[] {
         const data = cfg.read()
         const { name: profileName, profile } = getProfile(data, a.profile)
         try {
-          return { profile: profileName, ...describe(profile, a.service, a.method) }
+          const result = a.method
+            ? describeMethod(profile, a.service, a.method)
+            : describeService(profile, a.service)
+          return { profile: profileName, ...result }
         } catch (err) {
           return formatError(err)
         }
