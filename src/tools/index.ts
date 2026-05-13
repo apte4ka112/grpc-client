@@ -1,7 +1,9 @@
+import fs from 'node:fs'
 import { z } from 'zod'
 import { getProfile, type LoadedConfig } from '../config/loader.js'
 import { RuntimeOverridesSchema, type Profile, type RuntimeOverrides } from '../config/schema.js'
 import { buildCookieString, callGrpc, describeMethod, describeService, listServices } from '../grpc.js'
+import { parseCurl } from '../cli/curl.js'
 import type { CallLogEntry } from '../utils/calllog.js'
 import { formatError } from '../utils/errors.js'
 import { logger } from '../utils/logger.js'
@@ -25,6 +27,13 @@ const GrpcCallArgs = RuntimeOverridesSchema.extend({
 
 const ListServicesArgs = z.object({ profile: z.string().optional() })
 const DescribeArgs = z.object({ profile: z.string().optional(), service: z.string(), method: z.string().optional() })
+const ImportCurlArgs = z.object({
+  curl: z.string(),
+  profile: z.string().optional(),
+  replace: z.boolean().default(false),
+  updateHost: z.boolean().default(false),
+  host: z.string().optional()
+})
 
 export function buildTools(cfg: LoadedConfig): ToolDef[] {
   return [
@@ -109,6 +118,55 @@ export function buildTools(cfg: LoadedConfig): ToolDef[] {
             ? describeMethod(profile, a.service, a.method)
             : describeService(profile, a.service)
           return { profile: profileName, ...result }
+        } catch (err) {
+          return formatError(err)
+        }
+      }
+    },
+    {
+      name: 'grpc_import_curl',
+      description: 'Parse a curl command (e.g. Chrome DevTools Copy as cURL) and merge its headers and cookies into a profile in .grpc-client/config.json. By default does NOT touch host or protoDir — typical use is refreshing CSRF token and session cookies from a fresh browser request. Pass replace: true to overwrite headers/cookies instead of merging. Pass updateHost: true (or an explicit host string) only when you intentionally want to retarget the profile. Requires file-config mode.',
+      inputSchema: jsonSchema(ImportCurlArgs),
+      handler: async input => {
+        const a = ImportCurlArgs.parse(input)
+        if (cfg.source !== 'file' || !cfg.filePath) {
+          return {
+            error: true,
+            code: 9,
+            status: 'FAILED_PRECONDITION',
+            message: 'grpc_import_curl works only in file-config mode. Re-init with `npx github:apte4ka112/grpc-client init` (drop GRPC_CLIENT_CONFIG env from .mcp.json).'
+          }
+        }
+        try {
+          const parsed = parseCurl(a.curl)
+          const raw = JSON.parse(fs.readFileSync(cfg.filePath, 'utf8'))
+          raw.profiles = raw.profiles ?? {}
+          const profileName = a.profile ?? raw.active
+          if (!profileName) return { error: true, code: 9, status: 'FAILED_PRECONDITION', message: 'no profile name (config has no active, none passed)' }
+          const existing = raw.profiles[profileName]
+          if (!existing) {
+            return {
+              error: true,
+              code: 9,
+              status: 'FAILED_PRECONDITION',
+              message: `Profile "${profileName}" not found. Add it with host + proto.protoDir first, then re-run grpc_import_curl.`
+            }
+          }
+          const nextHeaders = a.replace ? parsed.headers : { ...(existing.headers ?? {}), ...parsed.headers }
+          const nextCookies = a.replace ? parsed.cookies : { ...(existing.cookies ?? {}), ...parsed.cookies }
+          const nextHost = a.host ?? (a.updateHost ? parsed.host : existing.host)
+          raw.profiles[profileName] = { ...existing, host: nextHost, headers: nextHeaders, cookies: nextCookies }
+          fs.writeFileSync(cfg.filePath, JSON.stringify(raw, null, 2) + '\n')
+          return {
+            profile: profileName,
+            curlUrl: parsed.url,
+            curlHost: parsed.host,
+            profileHost: nextHost,
+            hostChanged: nextHost !== existing.host,
+            headersUpdated: Object.keys(parsed.headers).length,
+            cookiesUpdated: Object.keys(parsed.cookies).length,
+            action: a.replace ? 'replaced' : 'merged'
+          }
         } catch (err) {
           return formatError(err)
         }

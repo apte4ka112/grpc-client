@@ -1,8 +1,25 @@
 #!/usr/bin/env node
 import { startServer } from './server.js'
+import { formatReport, runInit } from './cli/init.js'
 import { logger } from './utils/logger.js'
 
-startServer().catch(err => {
-  logger.fatal({ err: err.message, stack: err.stack }, 'fatal startup error')
+const args = process.argv.slice(2)
+
+if (args[0] === 'init') {
+  try {
+    const report = runInit({ cwd: process.cwd() })
+    process.stdout.write(formatReport(report) + '\n')
+    process.exit(0)
+  } catch (err) {
+    process.stderr.write(`init failed: ${(err as Error).message}\n`)
+    process.exit(1)
+  }
+} else if (args[0] === 'from-curl') {
+  process.stderr.write('Tip: use the `grpc_import_curl` MCP tool inside Claude — paste the curl into the chat.\n')
   process.exit(1)
-})
+} else {
+  startServer().catch(err => {
+    logger.fatal({ err: err.message, stack: err.stack }, 'fatal startup error')
+    process.exit(1)
+  })
+}

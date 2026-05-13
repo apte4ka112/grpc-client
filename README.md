@@ -3,7 +3,7 @@
 **MCP-сервер — кнопка Send для native gRPC.**
 
 Минимальный TypeScript MCP server (stdio) поверх `@grpc/grpc-js`. Один транспорт, unary вызовы.
-Никакого глобального состояния в репо — конфигурация передаётся через `env` хост-проекта, лог пишется в `./.grpc-client/calls.jsonl` рядом с проектом.
+Никакого глобального состояния в репо — конфигурация лежит в `.grpc-client/config.json` хост-проекта, лог пишется рядом.
 
 ```
 Claude / MCP client
@@ -14,39 +14,53 @@ Claude / MCP client
 │   grpc_call              │
 │   grpc_list_services     │
 │   grpc_describe_method   │
+│   grpc_import_curl       │
 └────────────┬─────────────┘
              ▼
     src/grpc.ts (callGrpc / describe / listServices)
              ▼
         @grpc/grpc-js
              ▼
-   <host-project>/.grpc-client/calls.jsonl   (append-only лог)
+   <host-project>/.grpc-client/
+       config.json   (профили — hot-reload по mtime)
+       calls.jsonl   (append-only лог)
 ```
 
 ---
 
-## Подключение в хост-проекте (через npx)
+## Quickstart
 
-`<host-project>/.mcp.json`:
+В корне хост-проекта:
+
+```sh
+npx github:apte4ka112/grpc-client init
+```
+
+Эта команда:
+- создаёт `.grpc-client/config.json` (auto-detect `protoDir` в `node_modules/**/proto`),
+- добавляет блок `grpc-client` в `.mcp.json` (создаст файл если нет),
+- добавляет `.grpc-client/` в `.gitignore`.
+
+Получившийся `.mcp.json`:
 ```jsonc
 {
   "mcpServers": {
     "grpc-client": {
       "command": "npx",
-      "args": ["github:apte4ka112/grpc-client"],
-      "env": {
-        "GRPC_CLIENT_CONFIG": "{\"active\":\"dev\",\"profiles\":{\"dev\":{\"host\":\"grpc.dev.example.com:443\",\"proto\":{\"protoDir\":\"./node_modules/@your-org/api-client/proto\"},\"headers\":{\"x-csrf-token\":\"...\"},\"cookies\":{\"SHOP_SESSION_TOKEN\":\"...\"}}}}"
-      }
+      "args": ["github:apte4ka112/grpc-client"]
     }
   }
 }
 ```
 
-При первом запуске npx склонирует репу и выполнит `prepare` (= `tsc`) — соберёт `dist/`. Дальше использует кэш.
+Никаких секретов в `.mcp.json`. Конфиг с токенами — в локальном `.grpc-client/config.json` (gitignored).
 
-### `GRPC_CLIENT_CONFIG`
+Дальше открой `.grpc-client/config.json` и заполни `host` + первые `headers`/`cookies`, или сразу импортируй curl из DevTools через `grpc_import_curl` (см. ниже). Перезапусти Claude Code чтобы он подцепил MCP.
 
-`env` принимает **JSON-строку** с тем же шаблоном что и файл-конфиг:
+---
+
+## `.grpc-client/config.json`
+
 ```jsonc
 {
   "active": "dev",
@@ -54,14 +68,14 @@ Claude / MCP client
   "profiles": {
     "dev": {
       "host": "grpc.dev.example.com:443",
-      "proto": { "protoDir": "./node_modules/@your-org/api-client/proto" },
+      "proto": { "protoDir": "../node_modules/@your-org/api-client/proto" },
       "headers": { "x-csrf-token": "..." },
       "cookies": { "SHOP_SESSION_TOKEN": "..." },
       "timeoutMs": 30000
     },
     "prod": {
       "host": "grpc.example.com:443",
-      "proto": { "protoDir": "./node_modules/@your-org/api-client/proto" },
+      "proto": { "protoDir": "../node_modules/@your-org/api-client/proto" },
       "headers": {},
       "cookies": {}
     }
@@ -69,32 +83,31 @@ Claude / MCP client
 }
 ```
 
-Несколько URL — несколько профилей в `profiles{}`. Per-call можно переключаться через `profile: "prod"` в `grpc_call`.
+| Поле               | Что это                                                                    |
+| ------------------ | -------------------------------------------------------------------------- |
+| `host`             | gRPC endpoint в формате `host:port`, всегда TLS                            |
+| `proto.protoDir`   | Корень `.proto`. Относительный — резолвится **от директории config.json**  |
+| `headers`          | gRPC Metadata                                                              |
+| `cookies`          | Seed-куки, склеиваются в `cookie:` metadata                                |
+| `timeoutMs`        | Дедлайн на вызов (default 30000)                                           |
 
-| Поле               | Что это                                                                  |
-| ------------------ | ------------------------------------------------------------------------ |
-| `host`             | `host:port`, всегда TLS                                                  |
-| `proto.protoDir`   | Путь к корню `.proto`. Относительный — резолвится **от cwd**             |
-| `headers`          | gRPC Metadata                                                            |
-| `cookies`          | Seed-куки, склеиваются в `cookie:` metadata                              |
-| `timeoutMs`        | Дедлайн на вызов (default 30000)                                         |
+**Hot-reload:** файл перечитывается по mtime — после правки куки/csrf просто сохрани файл, рестарт MCP не нужен.
 
-### Альтернатива: файл-конфиг
+---
 
-Если `GRPC_CLIENT_CONFIG` начинается **не** с `{`, его значение трактуется как путь к JSON-файлу.
-Без env вообще ищется `./.grpc-client/config.json` от cwd. Файл-режим поддерживает hot-reload (mtime-кэш) — удобно при разработке.
+## Импорт curl из DevTools
 
-### Лог запросов
+В Chrome DevTools → Network → правый клик по grpc-web запросу → **Copy → Copy as cURL**. Вставь в чат и попроси Claude:
 
-`<host-project>/.grpc-client/calls.jsonl` — по одной JSON-строке на каждый `grpc_call` (включая `dryRun` и ошибки):
-```json
-{"ts":"2026-05-13T11:42:01.234Z","profile":"dev","target":"api.customer.v1.CustomerProfileAPI/GetNotifications","host":"grpc.dev.example.com:443","durationMs":142,"status":{"code":0,"name":"OK"},"request":{}}
-{"ts":"2026-05-13T11:42:09.012Z","profile":"dev","target":"ProductAPI/GetProductShortForecast","host":"...","error":{"code":16,"status":"UNAUTHENTICATED","message":"invalid session"},"request":{"productIds":[1,2]}}
-```
+> «Импортируй этот curl в профиль dev: `curl 'https://winestyle.ru/...' -H '...' ...`»
 
-Полезно: `tail -f .grpc-client/calls.jsonl | jq .`
+Тул `grpc_import_curl` распарсит и **смерджит** headers + cookies в существующий профиль. По умолчанию **не трогает `host`** и `proto.protoDir` — потому что curl из браузера обычно идёт на frontend (`winestyle.ru`), а реальный gRPC-бэкенд — другой (`grpc.winestyle.ru:443`), и он у тебя уже прописан в `config.json` правильно.
 
-Добавь `.grpc-client/` в `.gitignore` хост-проекта.
+Опции тула:
+- `profile: string` — в какой профиль слить (default: `active`).
+- `replace: boolean` (default `false`) — `true` заменит `headers`/`cookies` целиком, не мерджа.
+- `updateHost: boolean` (default `false`) — `true` возьмёт `host` из URL curl'а.
+- `host: string` — явно задать целевой host (приоритет над `updateHost`).
 
 ---
 
@@ -119,19 +132,8 @@ Claude / MCP client
 }
 ```
 
-Ответ:
-```json
-{
-  "profile": "dev",
-  "host": "grpc.dev.example.com:443",
-  "target": "catalog.CatalogService/GetProduct",
-  "status": { "code": 0, "name": "OK" },
-  "response": { "id": 123, "name": "..." },
-  "trailers": { "grpc-status": "0" },
-  "durationMs": 142
-}
-```
-На ошибке: `{ "error": true, "code": N, "status": "...", "message": "..." }`.
+Ответ: `{ profile, host, target, status: {code, name}, response, trailers, durationMs }`.
+На ошибке: `{ error: true, code, status, message, trailers? }`.
 
 ### `grpc_list_services`
 ```jsonc
@@ -142,15 +144,32 @@ Claude / MCP client
 ```jsonc
 { "service": "catalog.CatalogService", "method": "GetProduct" }
 ```
-Без `method` — список методов сервиса. С `method` — поля request/response с типами.
+Без `method` — список методов сервиса.
+
+### `grpc_import_curl`
+```jsonc
+{ "curl": "curl '...' -H '...' ...", "profile": "dev" }
+```
+
+---
+
+## Лог запросов
+
+`<host-project>/.grpc-client/calls.jsonl` — по одной JSON-строке на каждый `grpc_call` (включая `dryRun` и ошибки):
+```json
+{"ts":"2026-05-13T11:42:01.234Z","profile":"dev","target":"...","host":"grpc.dev.example.com:443","durationMs":142,"status":{"code":0,"name":"OK"},"request":{}}
+{"ts":"2026-05-13T11:42:09.012Z","profile":"dev","target":"...","host":"...","error":{"code":16,"status":"UNAUTHENTICATED","message":"invalid session"},"request":{"productIds":[1,2]}}
+```
+
+`tail -f .grpc-client/calls.jsonl | jq .`
 
 ---
 
 ## Discovery порядок
 
-1. `GRPC_CLIENT_CONFIG` env начинается с `{` → парсится как JSON.
+1. `GRPC_CLIENT_CONFIG` env начинается с `{` → парсится как inline JSON.
 2. `GRPC_CLIENT_CONFIG` env — путь к JSON-файлу.
-3. `./.grpc-client/config.json` (от cwd).
+3. `./.grpc-client/config.json` (от cwd, дефолт после `init`).
 4. иначе — ошибка с подсказкой.
 
 ---
@@ -180,5 +199,4 @@ npm run dev        # tsx watch
 - **Только TLS.** Plaintext gRPC и mTLS убраны.
 - **Auth — через `headers`/`cookies`.** Никаких разных типов аутентификации в схеме.
 - **Reflection не используется** — нужен локальный `.proto`.
-- **profile switching:** менять `active` или передавать `profile: "..."` per call.
-- **env-JSON режим:** конфиг фиксирован на старте процесса (env не меняется). Чтобы перечитать новые куки — рестарт MCP. Файл-режим перечитывает по mtime.
+- **`grpc_import_curl` работает только в file-config режиме** (после `init`). В env-JSON режиме конфиг иммутабельный.
