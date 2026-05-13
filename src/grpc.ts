@@ -174,7 +174,9 @@ function methodSummary(m: MethodMeta): MethodSummary {
 
 function normalizeTarget(host: string): string {
   const noScheme = host.replace(/^https?:\/\//, '').replace(/\/$/, '')
-  return /^dns:|^unix:|^ipv[46]:/.test(noScheme) ? noScheme : `dns:///${noScheme}`
+  if (/^dns:|^unix:|^ipv[46]:/.test(noScheme)) return noScheme
+  const withPort = /:\d+$/.test(noScheme) ? noScheme : `${noScheme}:443`
+  return `dns:///${withPort}`
 }
 
 const PRINTABLE_ASCII = /^[\x21-\x7e]+$/
